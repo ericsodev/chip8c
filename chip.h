@@ -8,6 +8,12 @@ typedef struct
 
 typedef struct
 {
+    char keyPress;
+    char *pad;
+} Keypad;
+
+typedef struct
+{
     unsigned char *mem;
     unsigned char *v;
     unsigned short pc;
@@ -16,6 +22,8 @@ typedef struct
     unsigned short sp;     // stack pointer
     unsigned char delayTimer;
     unsigned char soundTimer;
+    int updateCounter;
+    Keypad *keypad;
     Display *display;
 } Chip;
 

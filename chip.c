@@ -37,6 +37,7 @@ createChip()
     chip->stack = calloc(STACK_SIZE, sizeof(short));
     chip->delayTimer = 0;
     chip->soundTimer = 0;
+    chip->updateCounter = 0;
 
     chip->sp = 0;
     chip->i = 0;
@@ -45,6 +46,11 @@ createChip()
     Display *display = malloc(sizeof(Display));
     display->pixels = calloc(DISPLAY_WIDTH * DISPLAY_HEIGHT, sizeof(char));
     chip->display = display;
+
+    Keypad *keypad = malloc(sizeof(Keypad));
+    keypad->pad = malloc(16 * sizeof(char));
+    keypad->keyPress = 0;
+    chip->keypad = keypad;
 
     // load fonts to 0x050 to 0x0A0
     for (int i = 0; i < 80; i++)
@@ -78,7 +84,6 @@ void cycle(Chip *c)
     unsigned short opcode = c->mem[c->pc] << 8 | c->mem[c->pc + 1];
 
     c->pc = c->pc + 2;
-
     int x,
         y;
     unsigned short newAddr;
@@ -116,10 +121,25 @@ void cycle(Chip *c)
         c->pc = newAddr;
         break;
     case 0x3000:
+        // Skip if VX == NN
+        if (c->v[(opcode & 0x0F00) >> 8] == (opcode & 0x00FF))
+        {
+            c->pc += 2;
+        }
         break;
     case 0x4000:
+        // Skip if VX != NN
+        if (c->v[(opcode & 0x0F00) >> 8] != (opcode & 0x00FF))
+        {
+            c->pc += 2;
+        }
         break;
     case 0x5000:
+        // Skip if VX == VY
+        if (c->v[(opcode & 0x0F00) >> 8] == c->v[(opcode & 0x00F0) >> 4])
+        {
+            c->pc += 2;
+        }
         break;
     case 0x6000:
         // set VX to NN
@@ -130,16 +150,81 @@ void cycle(Chip *c)
         c->v[(opcode & 0x0F00) >> 8] += opcode & 0x00FF;
         break;
     case 0x8000:
+        x = (opcode & 0x0F00) >> 8;
+        y = (opcode & 0x00F0) >> 4;
+        switch (opcode & 0x000F)
+        {
+        case 0:
+            // VX = VY
+            c->v[x] = c->v[y];
+            break;
+        case 1:
+            // VX = VX OR VY
+            c->v[x] = c->v[x] | c->v[y];
+            break;
+        case 2:
+            // VX = VX AND VY
+            c->v[x] = c->v[x] & c->v[y];
+            break;
+        case 3:
+            // VX = VX XOR VY
+            c->v[x] = c->v[x] ^ c->v[y];
+            break;
+        case 4:
+            // VX = VX + VY, VF = carry
+            c->v[0xF] = (c->v[x] + c->v[y]) >> 8;
+            c->v[x] = (c->v[x] + c->v[y]) & 0xFF;
+            break;
+        case 5:
+            // VX = VX - VY, VF = carry
+            c->v[0xF] = 0;
+            if (c->v[x] >= c->v[y])
+            {
+
+                c->v[0xF] = 1;
+            }
+            c->v[x] = c->v[x] - c->v[y];
+            break;
+        case 6:
+            // Shift VX right, VF is shifted bit
+            c->v[0xF] = c->v[x] & 1;
+            c->v[x] >>= 1;
+            break;
+        case 7:
+            // VX = VY - VX, VF = carry
+            c->v[0xF] = 0;
+            if (c->v[y] >= c->v[x])
+            {
+
+                c->v[0xF] = 1;
+            }
+            c->v[x] = c->v[y] - c->v[x];
+            break;
+        case 0xE:
+            // Shift VX left, VF is shifted bit
+            c->v[0xF] = c->v[x] & 128;
+            c->v[x] <<= 1;
+            break;
+        }
         break;
     case 0x9000:
+        // Skip if VX != VY
+        if (c->v[(opcode & 0x0F00) >> 8] != c->v[(opcode & 0x00F0) >> 4])
+        {
+            c->pc += 2;
+        }
         break;
     case 0xA000:
         // set I to NNN
         c->i = opcode & 0x0FFF;
         break;
     case 0xB000:
+        // Jump to NNN
+        c->pc = opcode & 0x0FFF;
         break;
     case 0xC000:
+        // Set VX to random number AND NN
+        c->v[(opcode & 0x0F00) >> 8] = (rand() % 256) & (0x00FF & opcode);
         break;
     case 0xD000:
         x = c->v[(opcode & 0x0F00) >> 8] % DISPLAY_WIDTH;
@@ -181,8 +266,78 @@ void cycle(Chip *c)
         c->v[0xF] = collision;
         break;
     case 0xE000:
+        switch (opcode & 0xFF)
+        {
+        case 0x9E:
+            if (c->keypad->pad[c->v[(opcode & 0x0F00) >> 8]] == 1)
+            {
+                c->pc += 2;
+            }
+            break;
+        case 0xA1:
+            if (c->keypad->pad[c->v[(opcode & 0x0F00) >> 8]] == 0)
+            {
+                c->pc += 2;
+            }
+            break;
+        }
         break;
     case 0xF000:
+        x = (opcode & 0x0F00) >> 8;
+        switch (opcode & 0x00FF)
+        {
+        case 0x07:
+            c->v[x] = c->delayTimer;
+            break;
+        case 0x15:
+            c->delayTimer = c->v[x];
+            break;
+        case 0x18:
+            c->soundTimer = c->v[x];
+            break;
+        case 0x1E:
+            c->v[0xF] = (c->v[x] + c->i) / 4096;
+            c->i = (c->i + c->v[x]) % 4096;
+            break;
+        case 0x0A:
+            // find which key was pressed
+
+            for (int i = 0; i < 16; i++)
+            {
+                if (c->keypad->pad[i] == 1)
+                {
+
+                    c->v[(opcode & 0x0F00) >> 8] = i;
+                    c->pc += 2;
+                    break;
+                }
+            }
+            c->pc -= 2;
+            break;
+        case 0x29:
+            c->i = (c->v[x] & 0xF) * 5 + 0x50;
+            break;
+        case 0x55:
+            // load V0-VX (inclusive) to memory at i..i+x
+            for (int i = 0; i < x + 1; i++)
+            {
+                c->mem[c->i + i] = c->v[i];
+            }
+            break;
+        case 0x33:
+            // decimal conversion
+            c->mem[c->i] = c->v[x] / 100;
+            c->mem[c->i + 1] = (c->v[x] / 10) % 10;
+            c->mem[c->i + 2] = c->v[x] % 10;
+            break;
+        case 0x65:
+            // load V0-VX (inclusive) from memory at i..i+x
+            for (int i = 0; i < x + 1; i++)
+            {
+                c->v[i] = c->mem[c->i + i];
+            }
+            break;
+        }
         break;
     }
 }
